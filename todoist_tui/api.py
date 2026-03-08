@@ -2,7 +2,7 @@ import httpx
 from typing import Optional
 from .models import Project, Task
 
-BASE_URL = "https://api.todoist.com/rest/v2"
+BASE_URL = "https://api.todoist.com/api/v1"
 
 
 class TodoistClient:
@@ -16,7 +16,7 @@ class TodoistClient:
     async def get_projects(self) -> list[Project]:
         response = await self._client.get("/projects")
         response.raise_for_status()
-        return [Project(**p) for p in response.json()]
+        return [Project(**p) for p in response.json()["results"]]
 
     async def get_tasks(
         self,
@@ -24,26 +24,40 @@ class TodoistClient:
         filter_str: Optional[str] = None,
     ) -> list[Task]:
         params: dict = {}
-        if project_id:
-            params["project_id"] = project_id
         if filter_str:
             params["filter"] = filter_str
+        elif project_id:
+            params["project_id"] = project_id
         response = await self._client.get("/tasks", params=params)
         response.raise_for_status()
-        return [Task(**t) for t in response.json()]
+        return [Task(**t) for t in response.json()["results"]]
 
     async def create_task(
         self,
         content: str,
+        description: Optional[str] = None,
         due_string: Optional[str] = None,
+        deadline_date: Optional[str] = None,
         priority: int = 1,
         project_id: Optional[str] = None,
+        labels: Optional[list] = None,
+        duration: Optional[int] = None,
+        duration_unit: Optional[str] = None,
     ) -> Task:
         body: dict = {"content": content, "priority": priority}
+        if description:
+            body["description"] = description
         if due_string:
             body["due_string"] = due_string
+        if deadline_date:
+            body["deadline_date"] = deadline_date
         if project_id:
             body["project_id"] = project_id
+        if labels:
+            body["labels"] = labels
+        if duration and duration_unit:
+            body["duration"] = duration
+            body["duration_unit"] = duration_unit
         response = await self._client.post("/tasks", json=body)
         response.raise_for_status()
         return Task(**response.json())

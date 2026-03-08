@@ -47,10 +47,13 @@ TaskList {
     height: 1fr;
 }
 
-TaskList > ListItem {
-    padding: 0 1;
+TaskList > .tree--guides {
+    color: $primary-darken-2;
 }
 
-TaskList > ListItem.--highlight {
-    background: $primary-darken-1;
+UndoBar {
+    height: 1;
+    background: $warning-darken-2;
+    color: $text;
+    padding: 0 1;
 }

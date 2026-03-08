@@ -35,6 +35,7 @@ class Task:
     priority: int
     project_id: Optional[str]
     due: Optional[DueDate]
+    parent_id: Optional[str]
 
     def __init__(self, **kwargs):
         self.id = kwargs.get("id", "")
@@ -43,3 +44,4 @@ class Task:
         self.project_id = kwargs.get("project_id")
         due_raw = kwargs.get("due")
         self.due = DueDate(**due_raw) if due_raw else None
+        self.parent_id = kwargs.get("parent_id")
