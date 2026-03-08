@@ -1,0 +1,56 @@
+Screen {
+    layout: vertical;
+}
+
+Header {
+    dock: top;
+}
+
+Footer {
+    dock: bottom;
+}
+
+#main-content {
+    layout: horizontal;
+    height: 1fr;
+}
+
+ProjectSidebar {
+    width: 20;
+    min-width: 16;
+    border-right: solid $primary-darken-2;
+    background: $surface-darken-1;
+}
+
+ProjectSidebar > ListItem {
+    padding: 0 1;
+}
+
+ProjectSidebar > ListItem.--highlight {
+    background: $primary-darken-1;
+}
+
+#task-panel {
+    width: 1fr;
+    padding: 0 1;
+}
+
+#panel-title {
+    height: 1;
+    background: $primary-darken-2;
+    color: $text;
+    padding: 0 1;
+    margin-bottom: 1;
+}
+
+TaskList {
+    height: 1fr;
+}
+
+TaskList > ListItem {
+    padding: 0 1;
+}
+
+TaskList > ListItem.--highlight {
+    background: $primary-darken-1;
+}
