@@ -10,6 +10,7 @@ from .widgets.project_sidebar import ProjectSidebar
 from .widgets.task_list import TaskList
 from .widgets.undo_bar import UndoBar
 from .screens.add_task import AddTaskScreen
+from .screens.due_date_screen import DueDateScreen
 
 
 class TodoistApp(App):
@@ -19,7 +20,12 @@ class TodoistApp(App):
     BINDINGS = [
         Binding("a", "add_task", "Add"),
         Binding("c", "complete_task", "Complete"),
-        Binding("r", "refresh", "Refresh"),
+        Binding("d", "delete_task", "Delete"),
+        Binding("m", "move_task", "Move"),
+        Binding("s", "set_due", "Schedule"),
+        Binding("e", "edit_task", "Edit"),
+        Binding("w", "expand_all", "Expand/Collapse all"),
+        Binding("r", "reload", "Refresh"),
         Binding("u", "cancel_pending", "Undo", show=False),
         Binding("q", "quit", "Quit"),
     ]
@@ -60,12 +66,14 @@ class TodoistApp(App):
             self._current_project_id = None
             self._current_filter = "today"
             self.query_one(TaskList).load(project_id=None, filter_str="today")
+            self.query_one(TaskList).set_collaborators([])
         else:
             self._current_project_id = message.project_id
             self._current_filter = None
             self.query_one(TaskList).load(
                 project_id=message.project_id, filter_str=None
             )
+            self._load_collaborators(message.project_id)
 
     # ── actions ─────────────────────────────────────────────────────────────
 
@@ -75,8 +83,51 @@ class TodoistApp(App):
                 return
             self._create_task(result)
 
+        task_list = self.query_one(TaskList)
+        # Only pre-select a parent task when the task list has focus
+        focused_id: str | None = None
+        focused_name: str | None = None
+        if task_list.has_focus:
+            focused_id = task_list.focused_task_id
+            if focused_id:
+                node = task_list._nodes_by_id.get(focused_id)
+                if node and node.data:
+                    focused_name = node.data.content
+
         self.push_screen(
-            AddTaskScreen(default_project_id=self._current_project_id),
+            AddTaskScreen(
+                default_project_id=self._current_project_id,
+                default_parent_id=focused_id,
+                default_parent_name=focused_name,
+            ),
+            handle_result,
+        )
+
+    def action_edit_task(self) -> None:
+        task_list = self.query_one(TaskList)
+        task_id = task_list.focused_task_id
+        if not task_id:
+            self.notify("No task selected.", severity="warning")
+            return
+        node = task_list._nodes_by_id.get(task_id)
+        if not node or not node.data:
+            return
+        task = node.data
+
+        def handle_result(result: dict | None) -> None:
+            if result is None:
+                return
+            if "task_id" in result:
+                self._edit_task(result)
+            else:
+                self._create_task(result)
+
+        self.push_screen(
+            AddTaskScreen(
+                default_project_id=task.project_id,
+                default_parent_id=task.parent_id,
+                edit_task=task,
+            ),
             handle_result,
         )
 
@@ -100,13 +151,97 @@ class TodoistApp(App):
                 lambda: self._do_complete_tasks(frozenset({task_id})),
             )
 
+    def action_delete_task(self) -> None:
+        task_list = self.query_one(TaskList)
+        selected = frozenset(task_list._selected_ids)
+        if selected:
+            n = len(selected)
+            label = f"Deleting {n} task{'s' if n > 1 else ''}…"
+            self.query_one(UndoBar).show_action(
+                label,
+                lambda: self._do_delete_tasks(selected),
+            )
+        else:
+            task_id = task_list.focused_task_id
+            if not task_id:
+                self.notify("No task selected.", severity="warning")
+                return
+            self.query_one(UndoBar).show_action(
+                "Deleting task…",
+                lambda: self._do_delete_tasks(frozenset({task_id})),
+            )
+
+    def action_move_task(self) -> None:
+        task_list = self.query_one(TaskList)
+        selected = frozenset(task_list._selected_ids)
+        if not selected:
+            self.notify(
+                "Mark tasks for moving with Enter or click first.", severity="warning"
+            )
+            return
+
+        sidebar = self.query_one(ProjectSidebar)
+
+        if sidebar.has_focus:
+            # Move selected tasks to the highlighted project
+            item = sidebar.highlighted_child
+            if item is None:
+                self.notify("No project highlighted.", severity="warning")
+                return
+            if getattr(item, "_is_today", False):
+                self.notify("Cannot move tasks to the Today filter.", severity="warning")
+                return
+            project_id = getattr(item, "_project_id", None)
+            project_name = getattr(item, "_project_name", "")
+            self._do_move_tasks(
+                selected,
+                {"mode": "project", "target_id": project_id, "target_name": project_name},
+            )
+        else:
+            # Move selected tasks under the currently focused task
+            target_id = task_list.focused_task_id
+            if not target_id:
+                self.notify("No target task highlighted.", severity="warning")
+                return
+            if target_id in selected:
+                self.notify("Cannot move a task under itself.", severity="warning")
+                return
+            node = task_list._nodes_by_id.get(target_id)
+            target_name = (
+                node.data.content if node and node.data else target_id
+            )
+            self._do_move_tasks(
+                selected,
+                {"mode": "parent", "target_id": target_id, "target_name": target_name},
+            )
+
+    def action_set_due(self) -> None:
+        task_list = self.query_one(TaskList)
+        selected = frozenset(task_list._selected_ids)
+        if not selected:
+            task_id = task_list.focused_task_id
+            if not task_id:
+                self.notify("No task selected.", severity="warning")
+                return
+            selected = frozenset({task_id})
+
+        def handle_result(due_string: str | None) -> None:
+            if due_string is None:
+                return
+            self._do_set_due(selected, due_string)
+
+        self.push_screen(DueDateScreen(), handle_result)
+
+    def action_expand_all(self) -> None:
+        self.query_one(TaskList).action_expand_all_nodes()
+
     def action_quit(self) -> None:
         self.exit()
 
     def action_cancel_pending(self) -> None:
         self.query_one(UndoBar).cancel()
 
-    def action_refresh(self) -> None:
+    def action_reload(self) -> None:
         sidebar = self.query_one(ProjectSidebar)
         sidebar.load_projects()
         self._refresh_tasks()
@@ -118,18 +253,106 @@ class TodoistApp(App):
 
     @work
     async def _complete_tasks_worker(self, task_ids: frozenset) -> None:
-        errors = 0
+        succeeded = set()
         for task_id in task_ids:
             try:
                 await self.client.close_task(task_id)
+                succeeded.add(task_id)
             except httpx.HTTPError:
-                errors += 1
+                pass
         n = len(task_ids)
+        errors = n - len(succeeded)
         if errors:
             self.notify(f"Failed to complete {errors}/{n} task(s).", severity="error")
         else:
             self.notify(f"Completed {n} task{'s' if n > 1 else ''}.")
-        self._refresh_tasks()
+        if succeeded:
+            self.query_one(TaskList).remove_tasks(succeeded)
+
+    def _do_delete_tasks(self, task_ids: frozenset) -> None:
+        self._delete_tasks_worker(task_ids)
+
+    @work
+    async def _delete_tasks_worker(self, task_ids: frozenset) -> None:
+        succeeded = set()
+        for task_id in task_ids:
+            try:
+                await self.client.delete_task(task_id)
+                succeeded.add(task_id)
+            except httpx.HTTPError:
+                pass
+        n = len(task_ids)
+        errors = n - len(succeeded)
+        if errors:
+            self.notify(f"Failed to delete {errors}/{n} task(s).", severity="error")
+        else:
+            self.notify(f"Deleted {n} task{'s' if n > 1 else ''}.")
+        if succeeded:
+            self.query_one(TaskList).remove_tasks(succeeded)
+
+    def _do_move_tasks(self, task_ids: frozenset, result: dict) -> None:
+        self._move_tasks_worker(task_ids, result)
+
+    @work
+    async def _move_tasks_worker(self, task_ids: frozenset, result: dict) -> None:
+        mode = result["mode"]
+        target_id = result["target_id"]
+        target_name = result["target_name"]
+        succeeded = set()
+        for task_id in task_ids:
+            try:
+                if mode == "project":
+                    await self.client.move_task(task_id, project_id=target_id)
+                else:
+                    await self.client.move_task(task_id, parent_id=target_id)
+                succeeded.add(task_id)
+            except httpx.HTTPError as exc:
+                self.notify(f"Move error: {exc}", severity="error")
+        n = len(task_ids)
+        errors = n - len(succeeded)
+        if errors:
+            self.notify(f"Failed to move {errors}/{n} task(s).", severity="error")
+        else:
+            verb = "under" if mode == "parent" else "to"
+            self.notify(
+                f"Moved {n} task{'s' if n > 1 else ''} {verb} \"{target_name}\"."
+            )
+        task_list = self.query_one(TaskList)
+        if succeeded:
+            if mode == "parent":
+                task_list.reparent_tasks(succeeded, target_id)
+            elif mode == "project":
+                if target_id == self._current_project_id:
+                    # Same project — tasks are being un-parented to root level
+                    task_list.reparent_to_root(succeeded)
+                elif self._current_project_id is not None:
+                    # Different project — tasks leave this view
+                    task_list.remove_tasks(succeeded)
+                else:
+                    # "today" filter view — tasks still match, just clear selection
+                    task_list._selected_ids -= succeeded
+
+    def _do_set_due(self, task_ids: frozenset, due_string: str) -> None:
+        self._set_due_worker(task_ids, due_string)
+
+    @work
+    async def _set_due_worker(self, task_ids: frozenset, due_string: str) -> None:
+        errors = 0
+        updated_tasks = []
+        for task_id in task_ids:
+            try:
+                updated = await self.client.set_due(task_id, due_string)
+                updated_tasks.append(updated)
+            except httpx.HTTPError:
+                errors += 1
+        n = len(task_ids)
+        if errors:
+            self.notify(f"Failed to set due date on {errors}/{n} task(s).", severity="error")
+        else:
+            self.notify(f"Due date set to \"{due_string}\" on {n} task{'s' if n > 1 else ''}.")
+        task_list = self.query_one(TaskList)
+        for task in updated_tasks:
+            task_list.update_task(task)
 
     def _create_task(self, data: dict) -> None:
         self._create_task_worker(data)
@@ -137,21 +360,67 @@ class TodoistApp(App):
     @work
     async def _create_task_worker(self, data: dict) -> None:
         try:
-            await self.client.create_task(
+            task = await self.client.create_task(
                 content=data["content"],
                 description=data.get("description"),
                 due_string=data.get("due_string"),
                 deadline_date=data.get("deadline_date"),
                 priority=data.get("priority", 1),
                 project_id=data.get("project_id"),
+                parent_id=data.get("parent_id"),
                 labels=data.get("labels"),
                 duration=data.get("duration"),
                 duration_unit=data.get("duration_unit"),
+                assignee_id=data.get("assignee_id"),
             )
             self.notify("Task added.")
-            self._refresh_tasks()
+            self.query_one(TaskList).insert_task(task)
         except httpx.HTTPError as exc:
             self.notify(f"Failed to create task: {exc}", severity="error")
+
+    def _edit_task(self, data: dict) -> None:
+        self._edit_task_worker(data)
+
+    @work
+    async def _edit_task_worker(self, data: dict) -> None:
+        task_id = data.pop("task_id")
+        # Build the update fields, filtering out None values
+        fields: dict = {}
+        fields["content"] = data["content"]
+        fields["priority"] = data.get("priority", 1)
+        if data.get("description") is not None:
+            fields["description"] = data["description"]
+        else:
+            fields["description"] = ""
+        if data.get("due_string"):
+            fields["due_string"] = data["due_string"]
+        if data.get("deadline_date"):
+            fields["deadline_date"] = data["deadline_date"]
+        if data.get("labels"):
+            fields["labels"] = data["labels"]
+        else:
+            fields["labels"] = []
+        if data.get("duration") and data.get("duration_unit"):
+            fields["duration"] = data["duration"]
+            fields["duration_unit"] = data["duration_unit"]
+        if data.get("assignee_id"):
+            fields["assignee_id"] = data["assignee_id"]
+        else:
+            fields["assignee_id"] = None
+        try:
+            updated = await self.client.update_task(task_id, **fields)
+            self.notify("Task updated.")
+            self.query_one(TaskList).update_task(updated)
+        except httpx.HTTPError as exc:
+            self.notify(f"Failed to update task: {exc}", severity="error")
+
+    @work
+    async def _load_collaborators(self, project_id: str) -> None:
+        try:
+            collaborators = await self.client.get_collaborators(project_id)
+            self.query_one(TaskList).set_collaborators(collaborators)
+        except Exception:
+            pass  # non-shared projects may not have collaborators
 
     def _refresh_tasks(self) -> None:
         task_list = self.query_one(TaskList)

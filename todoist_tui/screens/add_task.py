@@ -4,8 +4,16 @@ from textual.widgets import Button, Input, Label, Select
 from textual.containers import Vertical, Horizontal, VerticalScroll
 from textual._work_decorator import work
 
+from ..models import Task
+
 # Sentinel used when the user leaves Project set to "Inbox (default)"
 _INBOX = "__inbox__"
+
+# Sentinel used when no parent task is selected
+_NO_PARENT = "__no_parent__"
+
+# Sentinel used when no assignee is selected
+_NO_ASSIGNEE = "__no_assignee__"
 
 _PRIORITY_OPTIONS = [
     ("1 — Normal", "1"),
@@ -67,13 +75,23 @@ class AddTaskScreen(ModalScreen[dict | None]):
     }
     """
 
-    def __init__(self, default_project_id: str | None = None) -> None:
+    def __init__(
+        self,
+        default_project_id: str | None = None,
+        default_parent_id: str | None = None,
+        default_parent_name: str | None = None,
+        edit_task: Task | None = None,
+    ) -> None:
         super().__init__()
         self._default_project_id = default_project_id
+        self._default_parent_id = default_parent_id
+        self._default_parent_name = default_parent_name
+        self._edit_task = edit_task
 
     def compose(self) -> ComposeResult:
+        is_edit = self._edit_task is not None
         with Vertical(id="dialog"):
-            yield Label("Add Task", id="form-title")
+            yield Label("Edit Task" if is_edit else "Add Task", id="form-title")
             with VerticalScroll(id="form-body"):
                 yield Label("Content *", classes="field-label")
                 yield Input(placeholder="Task name", id="content")
@@ -108,6 +126,20 @@ class AddTaskScreen(ModalScreen[dict | None]):
                     id="project",
                 )
 
+                yield Label("Parent task", classes="field-label")
+                yield Select(
+                    [("None (no parent)", _NO_PARENT)],
+                    value=_NO_PARENT,
+                    id="parent-task",
+                )
+
+                yield Label("Assignee", classes="field-label")
+                yield Select(
+                    [("Unassigned", _NO_ASSIGNEE)],
+                    value=_NO_ASSIGNEE,
+                    id="assignee",
+                )
+
                 yield Label("Duration", classes="field-label")
                 with Horizontal(id="duration-row"):
                     yield Input(placeholder="0", id="duration")
@@ -118,10 +150,24 @@ class AddTaskScreen(ModalScreen[dict | None]):
                     )
 
             with Horizontal(id="buttons"):
-                yield Button("Add", variant="primary", id="btn-add")
+                yield Button("Save" if is_edit else "Add", variant="primary", id="btn-add")
                 yield Button("Cancel", id="btn-cancel")
 
     def on_mount(self) -> None:
+        task = self._edit_task
+        if task:
+            self.query_one("#content", Input).value = task.content
+            self.query_one("#description", Input).value = task.description or ""
+            self.query_one("#due", Input).value = task.due.date if task.due else ""
+            self.query_one("#deadline", Input).value = (
+                task.deadline["date"] if task.deadline else ""
+            )
+            self.query_one("#priority", Select).value = str(task.priority)
+            self.query_one("#labels", Input).value = ", ".join(task.labels)
+            self.query_one("#duration", Input).value = (
+                str(task.duration) if task.duration else ""
+            )
+            self.query_one("#duration-unit", Select).value = task.duration_unit or "minute"
         self.query_one("#content", Input).focus()
         self._load_projects()
 
@@ -138,18 +184,82 @@ class AddTaskScreen(ModalScreen[dict | None]):
                 select.value = self._default_project_id
         except Exception:
             pass  # leave with the "Inbox" default
+        # Load parent tasks and collaborators for the initial project selection
+        self._load_parent_tasks(self._default_project_id)
+        self._load_collaborators(self._default_project_id)
+
+    @work
+    async def _load_parent_tasks(self, project_id: str | None) -> None:
+        """Populate the parent-task dropdown with tasks from *project_id*."""
+        select = self.query_one("#parent-task", Select)
+        if not project_id:
+            # Inbox or no project — just offer "no parent"
+            select.set_options([("None (no parent)", _NO_PARENT)])
+            select.value = _NO_PARENT
+            return
+        try:
+            tasks = await self.app.client.get_tasks(project_id=project_id)  # type: ignore[attr-defined]
+            options = [("None (no parent)", _NO_PARENT)] + [
+                (t.content, t.id) for t in tasks
+            ]
+            select.set_options(options)
+            # Pre-select the default parent if it exists in this project
+            if self._default_parent_id and any(
+                t.id == self._default_parent_id for t in tasks
+            ):
+                select.value = self._default_parent_id
+            else:
+                select.value = _NO_PARENT
+        except Exception:
+            select.set_options([("None (no parent)", _NO_PARENT)])
+            select.value = _NO_PARENT
+
+    @work
+    async def _load_collaborators(self, project_id: str | None) -> None:
+        """Populate the assignee dropdown with collaborators from *project_id*."""
+        select = self.query_one("#assignee", Select)
+        if not project_id:
+            select.set_options([("Unassigned", _NO_ASSIGNEE)])
+            select.value = _NO_ASSIGNEE
+            return
+        try:
+            collaborators = await self.app.client.get_collaborators(project_id)  # type: ignore[attr-defined]
+            options = [("Unassigned", _NO_ASSIGNEE)] + [
+                (c.name, c.id) for c in collaborators
+            ]
+            select.set_options(options)
+            select.value = _NO_ASSIGNEE
+        except Exception:
+            select.set_options([("Unassigned", _NO_ASSIGNEE)])
+            select.value = _NO_ASSIGNEE
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "project":
+            project_val = event.value
+            project_id = (
+                None if (not project_val or project_val == _INBOX) else str(project_val)
+            )
+            self._load_parent_tasks(project_id)
+            self._load_collaborators(project_id)
 
     # ── keyboard navigation ─────────────────────────────────────────────────
 
     def on_key(self, event) -> None:
         key = event.key
         if key == "escape":
+            event.stop()
             self.dismiss(None)
         elif key == "down":
+            event.stop()
             self.focus_next()
         elif key == "up":
+            event.stop()
             self.focus_previous()
+        elif key == "ctrl+s":
+            event.stop()
+            self._submit()
         elif key == "enter":
+            event.stop()
             focused = self.focused
             if isinstance(focused, Button):
                 if focused.id == "btn-add":
@@ -201,16 +311,29 @@ class AddTaskScreen(ModalScreen[dict | None]):
         duration_unit_raw = self.query_one("#duration-unit", Select).value
         duration_unit = str(duration_unit_raw) if duration and duration_unit_raw else None
 
-        self.dismiss(
-            {
-                "content": content,
-                "description": description,
-                "due_string": due,
-                "deadline_date": deadline,
-                "priority": priority,
-                "labels": labels,
-                "project_id": project_id,
-                "duration": duration,
-                "duration_unit": duration_unit,
-            }
+        parent_raw = self.query_one("#parent-task", Select).value
+        parent_id = (
+            None if (not parent_raw or parent_raw == _NO_PARENT) else str(parent_raw)
         )
+
+        assignee_raw = self.query_one("#assignee", Select).value
+        assignee_id = (
+            None if (not assignee_raw or assignee_raw == _NO_ASSIGNEE) else str(assignee_raw)
+        )
+
+        result = {
+            "content": content,
+            "description": description,
+            "due_string": due,
+            "deadline_date": deadline,
+            "priority": priority,
+            "labels": labels,
+            "project_id": project_id,
+            "parent_id": parent_id,
+            "duration": duration,
+            "duration_unit": duration_unit,
+            "assignee_id": assignee_id,
+        }
+        if self._edit_task is not None:
+            result["task_id"] = self._edit_task.id
+        self.dismiss(result)
