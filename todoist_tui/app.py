@@ -11,6 +11,7 @@ from .widgets.task_list import TaskList
 from .widgets.undo_bar import UndoBar
 from .screens.add_task import AddTaskScreen
 from .screens.due_date_screen import DueDateScreen
+from .widgets.chat_pane import ChatPane
 
 
 class TodoistApp(App):
@@ -26,6 +27,7 @@ class TodoistApp(App):
         Binding("e", "edit_task", "Edit"),
         Binding("w", "expand_all", "Expand/Collapse all"),
         Binding("r", "reload", "Refresh"),
+        Binding("slash", "open_chat", "Ask Claude"),
         Binding("u", "cancel_pending", "Undo", show=False),
         Binding("q", "quit", "Quit"),
     ]
@@ -36,6 +38,7 @@ class TodoistApp(App):
         self._current_project_id: str | None = None
         self._current_filter: str | None = "today"
         self._current_title: str = "Today"
+        self._assistant = None  # lazy-init on first chat open
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -45,6 +48,7 @@ class TodoistApp(App):
             with Vertical(id="task-panel"):
                 yield Label("Today", id="panel-title")
                 yield TaskList()
+        yield ChatPane(id="chat-pane")
         yield UndoBar()
         yield Footer()
 
@@ -231,6 +235,16 @@ class TodoistApp(App):
             self._do_set_due(selected, due_string)
 
         self.push_screen(DueDateScreen(), handle_result)
+
+    def action_open_chat(self) -> None:
+        if self._assistant is None:
+            try:
+                from .assistant import TaskAssistant
+                self._assistant = TaskAssistant(self.client)
+            except RuntimeError as e:
+                self.notify(str(e), severity="error")
+                return
+        self.query_one(ChatPane).focus_input()
 
     def action_expand_all(self) -> None:
         self.query_one(TaskList).action_expand_all_nodes()
