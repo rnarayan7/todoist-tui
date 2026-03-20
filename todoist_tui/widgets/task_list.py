@@ -10,17 +10,18 @@ PRIORITY_COLORS = {4: "red", 3: "orange1", 2: "yellow", 1: "white"}
 
 # Module-level name cache used by _task_label
 _collaborator_names: dict[str, str] = {}
+_fetched_projects: set[str] = set()
 
 
 def _task_label(task: Task, selected: bool = False) -> str:
     color = PRIORITY_COLORS.get(task.priority, "white")
     due_str = ""
     if task.due:
-        due_str = f"  [dim]due:{task.due.date}[/dim]"
+        due_str = f"  [dim cyan]due:{task.due.date}[/dim cyan]"
     assignee_str = ""
     if task.assignee_id:
         name = _collaborator_names.get(task.assignee_id, "assigned")
-        assignee_str = f"  [dim]@{name}[/dim]"
+        assignee_str = f"  [orchid]@{name}[/orchid]"
     priority_badge = (
         f" [bold {color}]p{task.priority}[/bold {color}]"
         if task.priority > 1
@@ -47,10 +48,16 @@ class TaskList(Tree):
         self._selected_ids: set[str] = set()
         self._nodes_by_id: dict = {}
 
-    def set_collaborators(self, collaborators: list[Collaborator]) -> None:
+    def set_collaborators(self, collaborators: list[Collaborator], project_id: str | None = None) -> None:
         """Update the collaborator name cache used for task labels."""
-        _collaborator_names.clear()
         _collaborator_names.update({c.id: c.name for c in collaborators})
+        if project_id:
+            _fetched_projects.add(project_id)
+        # Re-render labels for tasks with assignees so names appear
+        for node in self._iter_all_nodes(self.root):
+            if node.data and node.data.assignee_id:
+                selected = node.data.id in self._selected_ids
+                node.set_label(Text.from_markup(_task_label(node.data, selected=selected)))
 
     def action_select_cursor(self) -> None:
         """Click or Enter toggles the selection checkmark on a task node."""
@@ -118,6 +125,20 @@ class TaskList(Tree):
                 self.root.add_leaf("[dim]No tasks[/dim]")
                 self.focused_task_id = None
                 return
+
+            # Fetch collaborators for any projects we haven't seen yet
+            needed = {
+                t.project_id
+                for t in tasks
+                if t.assignee_id and t.project_id not in _fetched_projects
+            }
+            for pid in needed:
+                try:
+                    collabs = await self.app.client.get_collaborators(pid)  # type: ignore[attr-defined]
+                    _collaborator_names.update({c.id: c.name for c in collabs})
+                    _fetched_projects.add(pid)
+                except Exception:
+                    _fetched_projects.add(pid)  # don't retry on failure
 
             task_ids = {t.id for t in tasks}
 

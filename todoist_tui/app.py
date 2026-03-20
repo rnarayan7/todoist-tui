@@ -11,6 +11,8 @@ from .widgets.task_list import TaskList
 from .widgets.undo_bar import UndoBar
 from .screens.add_task import AddTaskScreen
 from .screens.due_date_screen import DueDateScreen
+from .screens.priority_screen import PriorityScreen
+from .screens.assignee_screen import AssigneeScreen
 from .widgets.chat_pane import ChatPane
 
 
@@ -23,7 +25,9 @@ class TodoistApp(App):
         Binding("c", "complete_task", "Complete"),
         Binding("d", "delete_task", "Delete"),
         Binding("m", "move_task", "Move"),
+        Binding("p", "set_priority", "Priority"),
         Binding("s", "set_due", "Schedule"),
+        Binding("i", "set_assignee", "Assign"),
         Binding("e", "edit_task", "Edit"),
         Binding("w", "expand_all", "Expand/Collapse all"),
         Binding("r", "reload", "Refresh"),
@@ -39,6 +43,7 @@ class TodoistApp(App):
         self._current_filter: str | None = "today"
         self._current_title: str = "Today"
         self._assistant = None  # lazy-init on first chat open
+        self._collaborators: list = []
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -70,7 +75,6 @@ class TodoistApp(App):
             self._current_project_id = None
             self._current_filter = "today"
             self.query_one(TaskList).load(project_id=None, filter_str="today")
-            self.query_one(TaskList).set_collaborators([])
         else:
             self._current_project_id = message.project_id
             self._current_filter = None
@@ -236,6 +240,47 @@ class TodoistApp(App):
 
         self.push_screen(DueDateScreen(), handle_result)
 
+    def action_set_priority(self) -> None:
+        task_list = self.query_one(TaskList)
+        selected = frozenset(task_list._selected_ids)
+        if not selected:
+            task_id = task_list.focused_task_id
+            if not task_id:
+                self.notify("No task selected.", severity="warning")
+                return
+            selected = frozenset({task_id})
+
+        def handle_result(priority: int | None) -> None:
+            if priority is None:
+                return
+            self._do_set_priority(selected, priority)
+
+        self.push_screen(PriorityScreen(), handle_result)
+
+    def action_set_assignee(self) -> None:
+        if not self._collaborators:
+            self.notify("No collaborators in this project.", severity="warning")
+            return
+
+        task_list = self.query_one(TaskList)
+        selected = frozenset(task_list._selected_ids)
+        if not selected:
+            task_id = task_list.focused_task_id
+            if not task_id:
+                self.notify("No task selected.", severity="warning")
+                return
+            selected = frozenset({task_id})
+
+        collabs = [(c.name, c.id) for c in self._collaborators]
+
+        def handle_result(assignee_id: str | None) -> None:
+            if assignee_id is None:
+                return
+            real_id = None if assignee_id == AssigneeScreen.UNASSIGN else assignee_id
+            self._do_set_assignee(selected, real_id)
+
+        self.push_screen(AssigneeScreen(collabs), handle_result)
+
     def action_open_chat(self) -> None:
         if self._assistant is None:
             try:
@@ -368,6 +413,55 @@ class TodoistApp(App):
         for task in updated_tasks:
             task_list.update_task(task)
 
+    def _do_set_priority(self, task_ids: frozenset, priority: int) -> None:
+        self._set_priority_worker(task_ids, priority)
+
+    @work
+    async def _set_priority_worker(self, task_ids: frozenset, priority: int) -> None:
+        errors = 0
+        updated_tasks = []
+        for task_id in task_ids:
+            try:
+                updated = await self.client.update_task(task_id, priority=priority)
+                updated_tasks.append(updated)
+            except httpx.HTTPError:
+                errors += 1
+        n = len(task_ids)
+        labels = {1: "Normal", 2: "Medium", 3: "High", 4: "Urgent"}
+        if errors:
+            self.notify(f"Failed to set priority on {errors}/{n} task(s).", severity="error")
+        else:
+            self.notify(f"Priority set to {labels[priority]} on {n} task{'s' if n > 1 else ''}.")
+        task_list = self.query_one(TaskList)
+        for task in updated_tasks:
+            task_list.update_task(task)
+
+    def _do_set_assignee(self, task_ids: frozenset, assignee_id: str | None) -> None:
+        self._set_assignee_worker(task_ids, assignee_id)
+
+    @work
+    async def _set_assignee_worker(self, task_ids: frozenset, assignee_id: str | None) -> None:
+        errors = 0
+        updated_tasks = []
+        for task_id in task_ids:
+            try:
+                updated = await self.client.update_task(task_id, assignee_id=assignee_id)
+                updated_tasks.append(updated)
+            except httpx.HTTPError:
+                errors += 1
+        n = len(task_ids)
+        if errors:
+            self.notify(f"Failed to set assignee on {errors}/{n} task(s).", severity="error")
+        else:
+            if assignee_id:
+                name = next((c.name for c in self._collaborators if c.id == assignee_id), "someone")
+                self.notify(f"Assigned {n} task{'s' if n > 1 else ''} to {name}.")
+            else:
+                self.notify(f"Unassigned {n} task{'s' if n > 1 else ''}.")
+        task_list = self.query_one(TaskList)
+        for task in updated_tasks:
+            task_list.update_task(task)
+
     def _create_task(self, data: dict) -> None:
         self._create_task_worker(data)
 
@@ -432,7 +526,8 @@ class TodoistApp(App):
     async def _load_collaborators(self, project_id: str) -> None:
         try:
             collaborators = await self.client.get_collaborators(project_id)
-            self.query_one(TaskList).set_collaborators(collaborators)
+            self._collaborators = collaborators
+            self.query_one(TaskList).set_collaborators(collaborators, project_id=project_id)
         except Exception:
             pass  # non-shared projects may not have collaborators
 
