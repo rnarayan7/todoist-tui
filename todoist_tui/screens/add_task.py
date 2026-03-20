@@ -128,7 +128,7 @@ class AddTaskScreen(ModalScreen[dict | None]):
 
                 yield Label("Parent task", classes="field-label")
                 yield Select(
-                    [("None (no parent)", _NO_PARENT)],
+                    [("None", _NO_PARENT)],
                     value=_NO_PARENT,
                     id="parent-task",
                 )
@@ -194,12 +194,12 @@ class AddTaskScreen(ModalScreen[dict | None]):
         select = self.query_one("#parent-task", Select)
         if not project_id:
             # Inbox or no project — just offer "no parent"
-            select.set_options([("None (no parent)", _NO_PARENT)])
+            select.set_options([("None", _NO_PARENT)])
             select.value = _NO_PARENT
             return
         try:
             tasks = await self.app.client.get_tasks(project_id=project_id)  # type: ignore[attr-defined]
-            options = [("None (no parent)", _NO_PARENT)] + [
+            options = [("None", _NO_PARENT)] + [
                 (t.content, t.id) for t in tasks
             ]
             select.set_options(options)
@@ -211,7 +211,7 @@ class AddTaskScreen(ModalScreen[dict | None]):
             else:
                 select.value = _NO_PARENT
         except Exception:
-            select.set_options([("None (no parent)", _NO_PARENT)])
+            select.set_options([("None", _NO_PARENT)])
             select.value = _NO_PARENT
 
     @work
@@ -244,8 +244,28 @@ class AddTaskScreen(ModalScreen[dict | None]):
 
     # ── keyboard navigation ─────────────────────────────────────────────────
 
+    def _any_select_expanded(self) -> Select | None:
+        """Return the expanded Select, if any."""
+        for s in self.query(Select):
+            if s.expanded:
+                return s
+        return None
+
     def on_key(self, event) -> None:
         key = event.key
+        expanded = self._any_select_expanded()
+        if expanded:
+            # Let the overlay handle most keys while a dropdown is open
+            if key == "left":
+                event.stop()
+                expanded.expanded = False
+                expanded.focus()
+            elif key == "escape":
+                event.stop()
+                expanded.expanded = False
+                expanded.focus()
+            # All other keys (up, down, enter, etc.) pass through to the overlay
+            return
         if key == "escape":
             event.stop()
             self.dismiss(None)
@@ -255,6 +275,11 @@ class AddTaskScreen(ModalScreen[dict | None]):
         elif key == "up":
             event.stop()
             self.focus_previous()
+        elif key == "right":
+            focused = self.focused
+            if isinstance(focused, Select):
+                event.stop()
+                focused.action_show_overlay()
         elif key == "ctrl+s":
             event.stop()
             self._submit()
@@ -266,6 +291,8 @@ class AddTaskScreen(ModalScreen[dict | None]):
                     self._submit()
                 elif focused.id == "btn-cancel":
                     self.dismiss(None)
+            elif isinstance(focused, Select):
+                focused.action_show_overlay()
             elif isinstance(focused, Input):
                 # Enter in a text field moves to the next field
                 self.focus_next()
