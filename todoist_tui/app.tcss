@@ -57,3 +57,21 @@ UndoBar {
     color: $text;
     padding: 0 1;
 }
+
+#chat-pane {
+    height: 10;
+    border-top: solid $primary-darken-2;
+    background: $surface-darken-1;
+    padding: 0 1;
+}
+
+#chat-pane #chat-log {
+    height: 1fr;
+    padding: 0 1;
+}
+
+#chat-pane #chat-input {
+    dock: bottom;
+    border: none;
+    background: $surface;
+}
