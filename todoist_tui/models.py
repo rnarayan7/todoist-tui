@@ -68,4 +68,4 @@ class Task:
         self.duration = kwargs.get("duration")
         self.duration_unit = kwargs.get("duration_unit")
         self.deadline = kwargs.get("deadline")
-        self.assignee_id = kwargs.get("assignee_id")
+        self.assignee_id = kwargs.get("assignee_id") or kwargs.get("responsible_uid")
