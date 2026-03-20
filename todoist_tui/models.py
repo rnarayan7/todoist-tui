@@ -29,6 +29,18 @@ class Project:
 
 
 @dataclass
+class Collaborator:
+    id: str
+    name: str
+    email: str
+
+    def __init__(self, **kwargs):
+        self.id = kwargs.get("id", "")
+        self.name = kwargs.get("name", "")
+        self.email = kwargs.get("email", "")
+
+
+@dataclass
 class Task:
     id: str
     content: str
@@ -36,6 +48,12 @@ class Task:
     project_id: Optional[str]
     due: Optional[DueDate]
     parent_id: Optional[str]
+    description: Optional[str] = None
+    labels: list = field(default_factory=list)
+    duration: Optional[int] = None
+    duration_unit: Optional[str] = None
+    deadline: Optional[dict] = None
+    assignee_id: Optional[str] = None
 
     def __init__(self, **kwargs):
         self.id = kwargs.get("id", "")
@@ -45,3 +63,9 @@ class Task:
         due_raw = kwargs.get("due")
         self.due = DueDate(**due_raw) if due_raw else None
         self.parent_id = kwargs.get("parent_id")
+        self.description = kwargs.get("description")
+        self.labels = kwargs.get("labels", [])
+        self.duration = kwargs.get("duration")
+        self.duration_unit = kwargs.get("duration_unit")
+        self.deadline = kwargs.get("deadline")
+        self.assignee_id = kwargs.get("assignee_id")
